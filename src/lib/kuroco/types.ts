@@ -16,6 +16,7 @@ export interface Department {
   deptCode: string
   deptName: string
   managerMemberId: number
+  managerName: string
   parentDept: string | null
   description: string
 }
@@ -179,6 +180,40 @@ export interface Invoice {
   matchedStatus: InvoiceMatchStatus
   discrepancyNote: string
   fileRef: string | null
+}
+
+export interface VendorInput {
+  vendorCode: string
+  name: string
+  contactPerson: string
+  email: string
+  phone: string
+  address: string
+  bankInfo: string
+  paymentTerms: string
+  category: string
+}
+
+export interface DepartmentInput {
+  deptName: string
+  managerMemberId: number | null
+  description: string
+}
+
+export interface BudgetInput {
+  fiscalYear: number
+  category: string
+  budgetAmount: number
+  usedAmount: number
+  note: string
+}
+
+export interface ApprovalRuleInput {
+  ruleName: string
+  minAmount: number
+  maxAmount: number | null
+  requiresItReview: boolean
+  steps: ApprovalRuleStep[]
 }
 
 export interface AuditLog {

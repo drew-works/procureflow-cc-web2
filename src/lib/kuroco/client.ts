@@ -11,10 +11,15 @@ import {
 } from './mappers'
 import type {
   ApprovalRole,
+  ApprovalRule,
+  ApprovalRuleInput,
   ApprovalStep,
   ApprovalStepStatus,
+  AuditLog,
   Budget,
+  BudgetInput,
   Department,
+  DepartmentInput,
   Invoice,
   InvoiceMatchStatus,
   Member,
@@ -23,6 +28,7 @@ import type {
   Quote,
   Receipt,
   Vendor,
+  VendorInput,
 } from './types'
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false'
@@ -80,13 +86,23 @@ async function db() {
 }
 
 let nextLogId = 1000
-function pushAuditLog(d: NonNullable<typeof _db>, actorId: number, actorName: string, actionType: string, targetId: number, detail: string, before: string | null, after: string | null) {
+function pushAuditLog(
+  d: NonNullable<typeof _db>,
+  actorId: number,
+  actorName: string,
+  actionType: string,
+  targetId: number,
+  detail: string,
+  before: string | null,
+  after: string | null,
+  targetType: string = 'PurchaseRequest',
+) {
   d.auditLogs.unshift({
     log_id: nextLogId++,
     ts: new Date().toISOString().slice(0, 19).replace('T', ' '),
     actor_member_id: { member_id: actorId, name: actorName },
     action_type: actionType,
-    target_type: 'PurchaseRequest',
+    target_type: targetType,
     target_id: targetId,
     detail,
     before_status: before,
@@ -113,7 +129,7 @@ export async function listVendors(): Promise<Vendor[]> {
   return d.vendors.map(toVendor)
 }
 
-export async function listApprovalRules() {
+export async function listApprovalRules(): Promise<ApprovalRule[]> {
   if (!USE_MOCK) return realFetch<any>('/rcms-api/1/approval_rules').then((r) => r.list.map(toApprovalRule))
   const d = await db()
   return d.approvalRules.map(toApprovalRule)
@@ -123,6 +139,143 @@ export async function listMembers(): Promise<Member[]> {
   if (!USE_MOCK) return realFetch<any>('/rcms-api/1/members').then((r) => r.list.map(toMember))
   const d = await db()
   return d.members.map(toMember)
+}
+
+// ---- 取引先マスター ----
+let nextVendorId = 1000
+export async function createVendor(input: VendorInput, actorId: number, actorName: string): Promise<Vendor> {
+  const d = await db()
+  const id = nextVendorId++
+  const raw = {
+    vendor_id: id,
+    vendor_code: input.vendorCode,
+    name: input.name,
+    contact_person: input.contactPerson,
+    email: input.email,
+    phone: input.phone,
+    address: input.address,
+    bank_info: input.bankInfo,
+    payment_terms: input.paymentTerms,
+    category: input.category,
+    status: { key: 'active', label: '取引中' },
+  }
+  d.vendors.unshift(raw)
+  pushAuditLog(d, actorId, actorName, '作成', id, `取引先「${input.name}」を登録`, null, '取引中', 'Vendor')
+  return toVendor(raw)
+}
+
+export async function updateVendor(vendorId: number, input: VendorInput, actorId: number, actorName: string): Promise<Vendor | null> {
+  const d = await db()
+  const raw = d.vendors.find((v) => v.vendor_id === vendorId)
+  if (!raw) return null
+  Object.assign(raw, {
+    vendor_code: input.vendorCode,
+    name: input.name,
+    contact_person: input.contactPerson,
+    email: input.email,
+    phone: input.phone,
+    address: input.address,
+    bank_info: input.bankInfo,
+    payment_terms: input.paymentTerms,
+    category: input.category,
+  })
+  pushAuditLog(d, actorId, actorName, '更新', vendorId, `取引先「${input.name}」を更新`, raw.status.label, raw.status.label, 'Vendor')
+  return toVendor(raw)
+}
+
+export async function setVendorStatus(vendorId: number, active: boolean, actorId: number, actorName: string): Promise<Vendor | null> {
+  const d = await db()
+  const raw = d.vendors.find((v) => v.vendor_id === vendorId)
+  if (!raw) return null
+  const before = raw.status.label
+  raw.status = active ? { key: 'active', label: '取引中' } : { key: 'inactive', label: '停止中' }
+  pushAuditLog(d, actorId, actorName, 'ステータス変更', vendorId, `取引先「${raw.name}」を${raw.status.label}に変更`, before, raw.status.label, 'Vendor')
+  return toVendor(raw)
+}
+
+// ---- 部署・予算マスター ----
+export async function updateDepartment(departmentId: number, input: DepartmentInput, members: Member[], actorId: number, actorName: string): Promise<Department | null> {
+  const d = await db()
+  const raw = d.departments.find((dep) => dep.department_id === departmentId)
+  if (!raw) return null
+  const manager = members.find((m) => m.memberId === input.managerMemberId)
+  raw.dept_name = input.deptName
+  raw.manager_member_id = manager ? { member_id: manager.memberId, name: manager.name } : null
+  raw.description = input.description
+  pushAuditLog(d, actorId, actorName, '更新', departmentId, `部署「${input.deptName}」を更新`, null, null, 'Department')
+  return toDepartment(raw)
+}
+
+export async function updateBudget(budgetId: number, input: BudgetInput, actorId: number, actorName: string): Promise<Budget | null> {
+  const d = await db()
+  const raw = d.budgets.find((b) => b.budget_id === budgetId)
+  if (!raw) return null
+  raw.fiscal_year = input.fiscalYear
+  raw.category = input.category
+  raw.budget_amount = input.budgetAmount
+  raw.used_amount = input.usedAmount
+  raw.note = input.note
+  pushAuditLog(d, actorId, actorName, '更新', budgetId, `予算(${raw.department_id?.dept_name ?? ''} ${input.fiscalYear}年度)を更新`, null, null, 'Budget')
+  return toBudget(raw)
+}
+
+let nextBudgetId = 1000
+export async function createBudget(departmentId: number, departmentName: string, input: BudgetInput, actorId: number, actorName: string): Promise<Budget> {
+  const d = await db()
+  const id = nextBudgetId++
+  const raw = {
+    budget_id: id,
+    department_id: { department_id: departmentId, dept_name: departmentName },
+    fiscal_year: input.fiscalYear,
+    category: input.category,
+    budget_amount: input.budgetAmount,
+    used_amount: input.usedAmount,
+    note: input.note,
+  }
+  d.budgets.unshift(raw)
+  pushAuditLog(d, actorId, actorName, '作成', id, `予算(${departmentName} ${input.fiscalYear}年度)を作成`, null, null, 'Budget')
+  return toBudget(raw)
+}
+
+// ---- 承認ルール管理 ----
+let nextApprovalRuleId = 1000
+export async function createApprovalRule(input: ApprovalRuleInput, actorId: number, actorName: string): Promise<ApprovalRule> {
+  const d = await db()
+  const id = nextApprovalRuleId++
+  const raw = {
+    rule_id: id,
+    rule_name: input.ruleName,
+    min_amount: input.minAmount,
+    max_amount: input.maxAmount,
+    requires_it_review: input.requiresItReview,
+    steps: input.steps,
+    active_flg: 1,
+  }
+  d.approvalRules.push(raw)
+  pushAuditLog(d, actorId, actorName, '作成', id, `承認ルール「${input.ruleName}」を作成`, null, null, 'ApprovalRule')
+  return toApprovalRule(raw)
+}
+
+export async function updateApprovalRule(ruleId: number, input: ApprovalRuleInput, actorId: number, actorName: string): Promise<ApprovalRule | null> {
+  const d = await db()
+  const raw = d.approvalRules.find((r) => r.rule_id === ruleId)
+  if (!raw) return null
+  raw.rule_name = input.ruleName
+  raw.min_amount = input.minAmount
+  raw.max_amount = input.maxAmount
+  raw.requires_it_review = input.requiresItReview
+  raw.steps = input.steps
+  pushAuditLog(d, actorId, actorName, '更新', ruleId, `承認ルール「${input.ruleName}」を更新`, null, null, 'ApprovalRule')
+  return toApprovalRule(raw)
+}
+
+export async function setApprovalRuleActive(ruleId: number, active: boolean, actorId: number, actorName: string): Promise<ApprovalRule | null> {
+  const d = await db()
+  const raw = d.approvalRules.find((r) => r.rule_id === ruleId)
+  if (!raw) return null
+  raw.active_flg = active ? 1 : 0
+  pushAuditLog(d, actorId, actorName, 'ステータス変更', ruleId, `承認ルール「${raw.rule_name}」を${active ? '有効化' : '無効化'}`, null, null, 'ApprovalRule')
+  return toApprovalRule(raw)
 }
 
 // ---- 購買申請 ----
@@ -422,18 +575,74 @@ export async function listInvoices(): Promise<Invoice[]> {
   return d.invoices.map(toInvoice)
 }
 
+const INVOICE_STATUS_KEY: Record<InvoiceMatchStatus, string> = { 確認中: 'checking', 一致: 'matched', 不一致: 'mismatch', 支払保留: 'hold', 支払済: 'paid' }
+
 export async function updateInvoiceStatus(invoiceId: number, status: InvoiceMatchStatus, note: string): Promise<Invoice | null> {
   const d = await db()
   const raw = d.invoices.find((i) => i.invoice_id === invoiceId)
   if (!raw) return null
-  const key: Record<InvoiceMatchStatus, string> = { 確認中: 'checking', 一致: 'matched', 不一致: 'mismatch', 支払保留: 'hold', 支払済: 'paid' }
-  raw.matched_status = { key: key[status], label: status }
+  raw.matched_status = { key: INVOICE_STATUS_KEY[status], label: status }
   raw.discrepancy_note = note
   return toInvoice(raw)
 }
 
+// 金額不一致検出 → 請求書を「支払保留」にし、対象申請のステータスも「支払い保留」にする（経理担当/管理者操作）
+export async function holdInvoicePayment(invoiceId: number, actorId: number, actorName: string): Promise<Invoice | null> {
+  const d = await db()
+  const raw = d.invoices.find((i) => i.invoice_id === invoiceId)
+  if (!raw) return null
+  const before = raw.matched_status.label
+  raw.matched_status = { key: 'hold', label: '支払保留' }
+  const req = d.requests.find((r) => r.topics_id === raw.purchase_request_id?.topics_id)
+  if (req) {
+    const beforeReq = req.status.label
+    req.status = { key: 'payment_hold', label: '支払い保留' }
+    req.update_ymdhi = new Date().toISOString().slice(0, 19).replace('T', ' ')
+    pushAuditLog(d, actorId, actorName, '金額不一致検出', req.topics_id, `請求書${raw.invoice_no}の金額不一致により支払保留`, beforeReq, '支払い保留')
+  }
+  pushAuditLog(d, actorId, actorName, 'ステータス変更', invoiceId, `請求書${raw.invoice_no}を支払保留に変更`, before, '支払保留', 'Invoice')
+  return toInvoice(raw)
+}
+
+// 差異解消 → 請求書を「一致」として確定し、対象申請を「請求書確認中」に戻す（経理担当/管理者操作）
+export async function confirmInvoiceMatch(invoiceId: number, actorId: number, actorName: string): Promise<Invoice | null> {
+  const d = await db()
+  const raw = d.invoices.find((i) => i.invoice_id === invoiceId)
+  if (!raw) return null
+  const before = raw.matched_status.label
+  raw.matched_status = { key: 'matched', label: '一致' }
+  raw.discrepancy_note = ''
+  const req = d.requests.find((r) => r.topics_id === raw.purchase_request_id?.topics_id)
+  if (req && req.status.label === '支払い保留') {
+    const beforeReq = req.status.label
+    req.status = { key: 'invoice_checking', label: '請求書確認中' }
+    req.update_ymdhi = new Date().toISOString().slice(0, 19).replace('T', ' ')
+    pushAuditLog(d, actorId, actorName, '差異解消', req.topics_id, `請求書${raw.invoice_no}の差異を解消し請求書確認中に戻す`, beforeReq, '請求書確認中')
+  }
+  pushAuditLog(d, actorId, actorName, '一致確定', invoiceId, `請求書${raw.invoice_no}を一致として確定`, before, '一致', 'Invoice')
+  return toInvoice(raw)
+}
+
+// 支払確定 → 請求書を「支払済」にし、対象申請を「完了」にする（経理担当/管理者操作）
+export async function confirmInvoicePayment(invoiceId: number, actorId: number, actorName: string): Promise<Invoice | null> {
+  const d = await db()
+  const raw = d.invoices.find((i) => i.invoice_id === invoiceId)
+  if (!raw) return null
+  const before = raw.matched_status.label
+  raw.matched_status = { key: 'paid', label: '支払済' }
+  const req = d.requests.find((r) => r.topics_id === raw.purchase_request_id?.topics_id)
+  if (req) {
+    const beforeReq = req.status.label
+    req.status = { key: 'completed', label: '完了' }
+    req.update_ymdhi = new Date().toISOString().slice(0, 19).replace('T', ' ')
+    pushAuditLog(d, actorId, actorName, '支払確定', req.topics_id, `請求書${raw.invoice_no}の支払を確定し完了`, beforeReq, '完了')
+  }
+  pushAuditLog(d, actorId, actorName, '支払確定', invoiceId, `請求書${raw.invoice_no}を支払済に変更`, before, '支払済', 'Invoice')
+  return toInvoice(raw)
+}
+
 // ---- 監査ログ ----
-export async function listAuditLogs() {
+export async function listAuditLogs(): Promise<AuditLog[]> {
   const d = await db()
   return d.auditLogs.map(toAuditLog)
 }

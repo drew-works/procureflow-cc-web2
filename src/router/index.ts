@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import type { Role } from '@/lib/kuroco/types'
 
 const routes = [
   { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue') },
@@ -12,11 +13,32 @@ const routes = [
   { path: '/approvals', name: 'approvals', component: () => import('@/views/ApprovalListView.vue'), meta: { requiresAuth: true } },
   { path: '/purchase-orders', name: 'purchase-orders', component: () => import('@/views/PurchaseOrderView.vue'), meta: { requiresAuth: true } },
   { path: '/receiving', name: 'receiving', component: () => import('@/views/ReceivingView.vue'), meta: { requiresAuth: true } },
-  { path: '/invoices', name: 'invoices', component: () => import('@/views/PlaceholderView.vue'), meta: { requiresAuth: true }, props: { title: '請求書照合' } },
-  { path: '/vendors', name: 'vendors', component: () => import('@/views/PlaceholderView.vue'), meta: { requiresAuth: true }, props: { title: '取引先マスター' } },
-  { path: '/master/departments', name: 'master-dept-budget', component: () => import('@/views/PlaceholderView.vue'), meta: { requiresAuth: true }, props: { title: '部署・予算マスター' } },
-  { path: '/approval-rules', name: 'approval-rules', component: () => import('@/views/PlaceholderView.vue'), meta: { requiresAuth: true }, props: { title: '承認ルール管理' } },
-  { path: '/audit-log', name: 'audit-log', component: () => import('@/views/PlaceholderView.vue'), meta: { requiresAuth: true }, props: { title: '監査ログ' } },
+  {
+    path: '/invoices',
+    name: 'invoices',
+    component: () => import('@/views/InvoiceMatchingView.vue'),
+    meta: { requiresAuth: true, roles: ['購買担当', '経理担当', '管理者'] as Role[] },
+  },
+  { path: '/vendors', name: 'vendors', component: () => import('@/views/VendorMasterView.vue'), meta: { requiresAuth: true } },
+  {
+    path: '/master/departments',
+    name: 'master-dept-budget',
+    component: () => import('@/views/DepartmentBudgetView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/approval-rules',
+    name: 'approval-rules',
+    component: () => import('@/views/ApprovalRuleView.vue'),
+    meta: { requiresAuth: true, roles: ['購買担当', '経理担当', '管理者'] as Role[] },
+  },
+  {
+    path: '/audit-log',
+    name: 'audit-log',
+    component: () => import('@/views/AuditLogView.vue'),
+    meta: { requiresAuth: true, roles: ['経理担当', '管理者'] as Role[] },
+  },
+  { path: '/403', name: 'forbidden', component: () => import('@/views/AccessDeniedView.vue'), meta: { requiresAuth: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
@@ -37,6 +59,10 @@ router.beforeEach(async (to) => {
   }
   if (to.name === 'login' && auth.isLoggedIn) {
     return { name: 'dashboard' }
+  }
+  const roles = to.meta.roles as Role[] | undefined
+  if (roles && to.name !== 'forbidden' && auth.role && !roles.includes(auth.role)) {
+    return { name: 'forbidden', query: { from: to.fullPath } }
   }
   return true
 })

@@ -19,11 +19,11 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'quotes', label: '見積比較', path: '/quotes', implemented: true, roles: 'all' },
   { key: 'purchase-orders', label: '発注管理', path: '/purchase-orders', implemented: true, roles: 'all' },
   { key: 'receiving', label: '検収管理', path: '/receiving', implemented: true, roles: 'all' },
-  { key: 'invoices', label: '請求書照合', path: '/invoices', implemented: false, roles: ['購買担当', '経理担当', '管理者'] },
-  { key: 'vendors', label: '取引先マスター', path: '/vendors', implemented: false, roles: 'all' },
-  { key: 'master-dept-budget', label: '部署・予算マスター', path: '/master/departments', implemented: false, roles: 'all' },
-  { key: 'approval-rules', label: '承認ルール管理', path: '/approval-rules', implemented: false, roles: ['購買担当', '経理担当', '管理者'] },
-  { key: 'audit-log', label: '監査ログ', path: '/audit-log', implemented: false, roles: ['経理担当', '管理者'] },
+  { key: 'invoices', label: '請求書照合', path: '/invoices', implemented: true, roles: ['購買担当', '経理担当', '管理者'] },
+  { key: 'vendors', label: '取引先マスター', path: '/vendors', implemented: true, roles: 'all' },
+  { key: 'master-dept-budget', label: '部署・予算マスター', path: '/master/departments', implemented: true, roles: 'all' },
+  { key: 'approval-rules', label: '承認ルール管理', path: '/approval-rules', implemented: true, roles: ['購買担当', '経理担当', '管理者'] },
+  { key: 'audit-log', label: '監査ログ', path: '/audit-log', implemented: true, roles: ['経理担当', '管理者'] },
 ]
 
 export function canSeeNavItem(role: Role | null, item: NavItem): boolean {
@@ -71,6 +71,34 @@ export function canEditRequestActions(role: Role, req: PurchaseRequest, memberId
   const canSelectQuote = role === '購買担当' || role === '管理者'
 
   return { canApprove, canReject, canReturn, canPlaceOrder, canRegisterReceipt, canRegisterInvoice, canSelectQuote }
+}
+
+// ---- 追加5画面向けの権限ヘルパー ----
+
+// 請求書照合: 経理担当・管理者のみ照合確定/支払保留/支払確定を操作できる（購買担当は閲覧のみ）
+export function canManageInvoices(role: Role): boolean {
+  return role === '経理担当' || role === '管理者'
+}
+
+// 取引先マスター: 購買担当・管理者のみ編集（新規・更新・有効/無効切替）できる
+export function canManageVendors(role: Role): boolean {
+  return role === '購買担当' || role === '管理者'
+}
+
+// 部署・予算マスター: 経理担当・管理者のみ編集できる
+export function canManageBudgets(role: Role): boolean {
+  return role === '経理担当' || role === '管理者'
+}
+
+// 部署・予算マスターの閲覧範囲: 申請者/部門長は自部門のみ、他ロールは全件
+export function visibleBudgetDepartmentIds(role: Role, departmentId: number): number[] | null {
+  if (role === '申請者' || role === '部門長') return [departmentId]
+  return null
+}
+
+// 承認ルール管理: 管理者のみ編集（購買担当・経理担当は閲覧のみ）
+export function canManageApprovalRules(role: Role): boolean {
+  return role === '管理者'
 }
 
 export const STATUS_COLOR: Record<PurchaseRequestStatus, string> = {

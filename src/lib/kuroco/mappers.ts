@@ -24,6 +24,7 @@ export function toDepartment(raw: any): Department {
     deptCode: raw.dept_code,
     deptName: raw.dept_name,
     managerMemberId: raw.manager_member_id?.member_id ?? null,
+    managerName: raw.manager_member_id?.name ?? '',
     parentDept: raw.parent_dept,
     description: raw.description ?? '',
   }

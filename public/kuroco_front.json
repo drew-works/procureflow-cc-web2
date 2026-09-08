@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    { "source": ".*", "destination": "/index.html" }
+  ],
+  "redirects": [],
+  "basic": ["kuroco:djjnw322"],
+  "ip_restrictions": []
+}
