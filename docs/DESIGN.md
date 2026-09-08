@@ -138,3 +138,15 @@ searchable）と `approval_steps`（JSON配列、社内承認ラインの逐次�
 2. 承認ワークフロー標準機能を使わずカスタムstatus実装 → 標準の通知メール・承認UIは提供されない
 3. レコード単位の閲覧制限をフロントfilterで実装（APIレベル未強制）→ 5章セキュリティ監査で
    既知の残課題として明記する
+
+## 進捗ログ
+
+- 2026-09-08T03:48Z 作業開始
+- 2026-09-08T04:18Z 人間よりclient_credentials OAuthクライアント受領、Admin MCP接続確立(procureflow-cc-web2, mcp:admin)
+- 2026-09-08T04:35Z バックエンド構築完了（コンテンツ定義7種、会員グループ6、サンプルデータ全件投入）
+- 2026-09-08T04:40Z Admin MCPのrcms_apiモジュール（API/エンドポイント作成)が機能しない不具合を確認（docs/API_BLOCKER.md）
+- 2026-09-08T04:48Z フロントエンド(モックモード)をKurocoFrontへ本番デプロイ（Basic認証で非公開）
+  https://procureflow-cc-web2.g.kuroco-front.app/ (ID: kuroco / PW: 別途共有)
+  → 最初に画面が動くまでの経過時間: 約60分
+- 現在: API作成のAdmin MCP不具合により、実データ接続(モック→実API切替)が保留中。
+  docs/API_BLOCKER.md の内容で人間にKuroco管理画面での手動エンドポイント作成を依頼中。
