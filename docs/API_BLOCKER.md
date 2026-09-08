@@ -56,17 +56,21 @@ Admin MCPの `api-upsert` / `api_uri-upsert` / `api-list` / `api-export_openapi`
 
 | パス | メソッド | topics_group_id | 備考 |
 |---|---|---|---|
-| purchase-requests/create | POST | 11 (PurchaseRequest) | 申請作成 |
-| purchase-requests/update | PUT または PATCH | 11 (PurchaseRequest) | ステータス遷移・承認操作 |
-| invoices/create | POST | 12 (Invoice) | |
-| invoices/update | PUT または PATCH | 12 (Invoice) | 照合ステータス更新 |
-| vendors/create | POST | 7 (Vendor) | |
-| vendors/update | PUT または PATCH | 7 (Vendor) | |
-| budgets/create | POST | 9 (Budget) | |
-| budgets/update | PUT または PATCH | 9 (Budget) | |
-| approval-rules/create | POST | 10 (ApprovalRule) | |
-| approval-rules/update | PUT または PATCH | 10 (ApprovalRule) | |
-| audit-logs/create | POST | 13 (AuditLog) | 操作ログの自動記録用 |
+| purchase-requests/insert | POST | 11 (PurchaseRequest) | 申請作成（オペレーション=新規登録） |
+| purchase-requests/update | PUT | 11 (PurchaseRequest) | ステータス遷移・承認操作（オペレーション=更新） |
+| invoices/insert | POST | 12 (Invoice) | |
+| invoices/update | PUT | 12 (Invoice) | 照合ステータス更新 |
+| vendors/insert | POST | 7 (Vendor) | |
+| vendors/update | PUT | 7 (Vendor) | |
+| budgets/insert | POST | 9 (Budget) | |
+| budgets/update | PUT | 9 (Budget) | |
+| approval-rules/insert | POST | 10 (ApprovalRule) | |
+| approval-rules/update | PUT | 10 (ApprovalRule) | |
+| audit-logs/insert | POST | 13 (AuditLog) | 操作ログの自動記録用 |
+
+フロントエンドの実装（`src/lib/kuroco/client.ts`）は上記のパス命名（list/details/insert/update）を
+前提にコード化済みです。エンドポイント作成時にパスをこの表と完全一致させてください
+（ズレる場合は作成後のパスを教えていただければ client.ts 側を合わせます）。
 
 ## この作業の記録
 最終報告では「人間の手作業（種類: Kuroco管理画面操作）」として件数をカウントする。
