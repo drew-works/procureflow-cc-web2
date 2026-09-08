@@ -1,0 +1,56 @@
+// Kuroco Topics::list 相当のレスポンス形（部署マスター）
+export const departmentList = {
+  errors: [],
+  messages: [],
+  list: [
+    {
+      department_id: 1,
+      dept_code: 'GA',
+      dept_name: '総務部',
+      manager_member_id: { member_id: 1, name: '田中一郎' },
+      parent_dept: null,
+      description: '全社共通の総務・庶務業務を担当',
+    },
+    {
+      department_id: 2,
+      dept_code: 'ISD',
+      dept_name: '情報システム部',
+      manager_member_id: { member_id: 4, name: '鈴木健太' },
+      parent_dept: null,
+      description: '社内IT機器・システムの管理運用を担当',
+    },
+    {
+      department_id: 3,
+      dept_code: 'PUR',
+      dept_name: '購買部',
+      manager_member_id: { member_id: 7, name: '渡辺淳' },
+      parent_dept: null,
+      description: '全社の購買・調達業務を担当',
+    },
+    {
+      department_id: 4,
+      dept_code: 'FIN',
+      dept_name: '経理部',
+      manager_member_id: { member_id: 9, name: '山本恵子' },
+      parent_dept: null,
+      description: '経費精算・支払業務を担当',
+    },
+    {
+      department_id: 5,
+      dept_code: 'SALES',
+      dept_name: '営業部',
+      manager_member_id: { member_id: 11, name: '加藤隆' },
+      parent_dept: null,
+      description: '国内営業活動を担当',
+    },
+    {
+      department_id: 6,
+      dept_code: 'DEV',
+      dept_name: '開発部',
+      manager_member_id: { member_id: 13, name: '松本大輔' },
+      parent_dept: null,
+      description: '製品・システム開発を担当',
+    },
+  ],
+  pageInfo: { totalCnt: 6, perPage: 50, totalPageCnt: 1, pageNo: 1 },
+}
