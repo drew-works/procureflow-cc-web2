@@ -206,6 +206,10 @@ export function toAuditLog(raw: any): AuditLog {
 // =====================================================================================
 // ここから下: 実API（Kuroco Topics API）用のマッパー・ペイロード変換。
 //
+// フィールドslugは docs/BACKEND_IDS.md（Admin MCPで実際に作成したコンテンツ定義の対応表）を正とする。
+// 旧来 docs/BACKEND_PLAN.md の簡略名（department/status/budget/member等）を参照していた箇所は
+// 本ドキュメント作成時に実slug（pr_department/pr_status/pr_budget/staff_member等）へ全て修正済み。
+//
 // 前提とするレスポンス契約（出典: kuroco-app-builderスキル mock-contract.md、docs/BACKEND_PLAN.md）
 //   - 一覧: { errors, messages, list: [...], pageInfo }
 //   - 詳細: { errors, messages, details: {...} }
@@ -217,7 +221,7 @@ export function toAuditLog(raw: any): AuditLog {
 //   - file型: [{ url, desc, ... }, ...]（空スロット含む可能性があるため url がある要素のみ採用）
 //
 // 実エンドポイントは docs/API_BLOCKER.md の作業がまだ完了していないため、本セクションのコードは
-// 「型は通るが実機で動作確認していない」実装であり、随所に要確認コメントを残している。
+// 「フィールド名は確定済みだが実機で動作確認していない」実装であり、随所に要確認コメントを残している。
 // =====================================================================================
 
 function selectLabel(v: any, fallback = ''): string {
@@ -312,46 +316,49 @@ const VENDOR_STATUS_BY_KEY: Record<string, Vendor['status']> = { active: '取引
 // ---- 読み取り: 実APIの生レスポンス → アプリ用型 ----
 
 export function fromApiDepartment(raw: any): Department {
-  // 要確認: BACKEND_PLAN.md記載のDepartmentフィールド定義には dept_code / description しか無く、
-  // マスター編集画面が必要とする「部門長(manager_member_id)」は定義されていない。
-  // 実エンドポイント側に項目追加されるまでは manager は空で返る想定。
+  // フィールド名は docs/BACKEND_IDS.md で確定済み: dept_code, description, manager_member(relation→member)。
+  // 要確認: 同ドキュメントの実フィールドslug一覧に parent_dept に相当する項目が無い
+  // （Departmentは階層を持たない構造で作成されている）。呼び出し元の型に parentDept が残っているため
+  // 参照だけは残すが、実データでは常に undefined → null になる想定。
   return {
     departmentId: raw.topics_id,
     deptCode: raw.dept_code ?? '',
     deptName: raw.subject ?? '',
-    managerMemberId: relationMemberId(raw.manager_member_id) as number,
-    managerName: relationMemberName(raw.manager_member_id),
+    managerMemberId: relationMemberId(raw.manager_member) as number,
+    managerName: relationMemberName(raw.manager_member),
     parentDept: raw.parent_dept ?? null,
     description: raw.description ?? '',
   }
 }
 
 export function fromApiBudget(raw: any): Budget {
+  // フィールド名は docs/BACKEND_IDS.md で確定済み:
+  // budget_department(relation→Department), fiscal_year, budget_amount, used_amount, budget_note, budget_category
   return {
     budgetId: raw.topics_id,
-    departmentId: relationTopicsId(raw.department) as number,
+    departmentId: relationTopicsId(raw.budget_department) as number,
     fiscalYear: raw.fiscal_year,
-    // 要確認: BACKEND_PLAN.mdのBudget定義に category 項目が無い。追加されるまでは空文字。
-    category: raw.category ?? '',
+    category: raw.budget_category ?? '',
     budgetAmount: raw.budget_amount,
     usedAmount: raw.used_amount,
-    note: raw.note ?? '',
+    note: raw.budget_note ?? '',
   }
 }
 
 export function fromApiVendor(raw: any): Vendor {
+  // フィールド名は docs/BACKEND_IDS.md で確定済み: vendor_email, vendor_category(select), vendor_status(select)
   return {
     vendorId: raw.topics_id,
     vendorCode: raw.vendor_code ?? '',
     name: raw.subject ?? '',
     contactPerson: raw.contact_person ?? '',
-    email: raw.email ?? '',
+    email: raw.vendor_email ?? '',
     phone: raw.phone ?? '',
     address: raw.address ?? '',
     bankInfo: raw.bank_info ?? '',
     paymentTerms: raw.payment_terms ?? '',
-    category: selectLabel(raw.category),
-    status: VENDOR_STATUS_BY_KEY[selectKey(raw.status)] ?? '取引中',
+    category: selectLabel(raw.vendor_category),
+    status: VENDOR_STATUS_BY_KEY[selectKey(raw.vendor_status)] ?? '取引中',
   }
 }
 
@@ -367,18 +374,21 @@ export function fromApiApprovalRule(raw: any): ApprovalRule {
   }
 }
 
-// StaffProfile（topics_group_id=8）: BACKEND_PLAN.mdにフィールド定義の明記が無く未確認。
-// member(relation, module=member) / department(relation, module=topics/Department) / position(text)
-// を持つ想定で実装。ロールはStaffProfile自身ではなく紐づくmemberの会員グループに由来する想定だが、
-// relation(module=member)で会員グループまで展開されて返るかは未確認。実データ確認後に要調整。
+// StaffProfile（topics_group_id=8）: フィールド名は docs/BACKEND_IDS.md で確定済み:
+// staff_member(relation→member) / staff_department(relation→Department) / position(text)。
+// email に相当する独立フィールドはStaffProfile自身には無いため、relation展開されたmember情報
+// （memberRel.email）からのみ取得する。
+// 要確認: ロールはStaffProfile自身ではなく紐づくmemberの会員グループに由来する想定だが、
+// relation(module=member)で会員グループ(group)まで展開されて返るかは実データ未確認。
+// 展開されない場合は常にフォールバック値「申請者」になる。
 export function fromApiStaffProfile(raw: any): Member {
-  const memberRel = raw.member ?? raw.applicant ?? null
+  const memberRel = raw.staff_member ?? null
   return {
     memberId: relationMemberId(memberRel) ?? raw.topics_id,
     name: relationMemberName(memberRel),
-    email: raw.email ?? memberRel?.email ?? '',
-    role: (memberRel?.group?.label ?? selectLabel(raw.role, '申請者')) as Role,
-    departmentId: relationTopicsId(raw.department) as number,
+    email: memberRel?.email ?? '',
+    role: (memberRel?.group?.label ?? '申請者') as Role,
+    departmentId: relationTopicsId(raw.staff_department) as number,
     position: raw.position ?? '',
   }
 }
@@ -393,14 +403,14 @@ export function fromApiPurchaseRequest(raw: any): PurchaseRequest {
     title: raw.subject ?? '',
     applicantMemberId: relationMemberId(raw.applicant) as number,
     applicantName: relationMemberName(raw.applicant),
-    departmentId: relationTopicsId(raw.department) as number,
-    departmentName: relationSubject(raw.department),
-    status: PR_STATUS_BY_KEY[selectKey(raw.status)] ?? (selectLabel(raw.status) as PurchaseRequestStatus),
+    departmentId: relationTopicsId(raw.pr_department) as number,
+    departmentName: relationSubject(raw.pr_department),
+    status: PR_STATUS_BY_KEY[selectKey(raw.pr_status)] ?? (selectLabel(raw.pr_status) as PurchaseRequestStatus),
     overallPurpose: raw.overall_purpose ?? '',
     lineItems: (raw.line_items ?? []).map(toLineItem),
     totalExclTax: raw.total_excl_tax,
     totalInclTax: raw.total_incl_tax,
-    budgetId: relationTopicsId(raw.budget),
+    budgetId: relationTopicsId(raw.pr_budget),
     quotes: (raw.quotes ?? []).map(toQuote),
     selectedVendorId: relationTopicsId(raw.selected_vendor),
     attachmentsQuote: apiFiles(raw.attachment_quotes),
@@ -416,18 +426,20 @@ export function fromApiPurchaseRequest(raw: any): PurchaseRequest {
 }
 
 export function fromApiInvoice(raw: any): Invoice {
+  // フィールド名は docs/BACKEND_IDS.md で確定済み:
+  // inv_purchase_request(relation→PurchaseRequest), inv_vendor(relation→Vendor), inv_amount, invoice_file
   return {
     invoiceId: raw.topics_id,
     invoiceNo: raw.subject ?? '',
-    purchaseRequestId: relationTopicsId(raw.purchase_request) as number,
-    purchaseRequestTitle: relationSubject(raw.purchase_request),
-    vendorId: relationTopicsId(raw.vendor) as number,
-    vendorName: relationSubject(raw.vendor),
-    amount: raw.amount,
+    purchaseRequestId: relationTopicsId(raw.inv_purchase_request) as number,
+    purchaseRequestTitle: relationSubject(raw.inv_purchase_request),
+    vendorId: relationTopicsId(raw.inv_vendor) as number,
+    vendorName: relationSubject(raw.inv_vendor),
+    amount: raw.inv_amount,
     receivedDate: raw.received_date,
     matchedStatus: INVOICE_STATUS_BY_KEY[selectKey(raw.matched_status)] ?? (selectLabel(raw.matched_status) as InvoiceMatchStatus),
     discrepancyNote: raw.discrepancy_note ?? '',
-    fileRef: apiFiles(raw.file)[0]?.name ?? null,
+    fileRef: apiFiles(raw.invoice_file)[0]?.name ?? null,
   }
 }
 
@@ -445,7 +457,8 @@ export function fromApiAuditLog(raw: any): AuditLog {
     actionType: selectLabel(raw.action_type, raw.action_type),
     targetType: raw.target_type ?? '',
     targetId: raw.target_id,
-    detail: raw.detail ?? '',
+    // フィールド名は docs/BACKEND_IDS.md で確定済み: detail ではなく log_detail
+    detail: raw.log_detail ?? '',
     beforeStatus: raw.before_status ?? null,
     afterStatus: raw.after_status ?? null,
   }
@@ -454,48 +467,48 @@ export function fromApiAuditLog(raw: any): AuditLog {
 // ---- 書き込み: アプリ用の入力 → 実APIへ送るペイロード ----
 
 export function vendorInputToApiPayload(input: VendorInput): Record<string, unknown> {
+  // フィールド名は docs/BACKEND_IDS.md で確定済み: vendor_email, vendor_category(select)
   return {
     subject: input.name,
     vendor_code: input.vendorCode,
     contact_person: input.contactPerson,
-    email: input.email,
+    vendor_email: input.email,
     phone: input.phone,
     address: input.address,
     bank_info: input.bankInfo,
     payment_terms: input.paymentTerms,
-    // select型: insert/update時はkey文字列を渡す想定（未検証）。categoryのkey一覧はBACKEND_PLAN.md参照。
-    category: input.category,
+    // select型: insert/update時はkey文字列を渡す想定（未検証）。vendor_categoryのkey一覧はBACKEND_PLAN.md参照。
+    vendor_category: input.category,
   }
 }
 
 export function vendorCreateApiPayload(input: VendorInput): Record<string, unknown> {
-  return { ...vendorInputToApiPayload(input), status: 'active' }
+  return { ...vendorInputToApiPayload(input), vendor_status: 'active' }
 }
 
 export function vendorStatusApiPayload(active: boolean): Record<string, unknown> {
-  return { status: active ? 'active' : 'inactive' }
+  return { vendor_status: active ? 'active' : 'inactive' }
 }
 
 export function departmentUpdateApiPayload(input: DepartmentInput): Record<string, unknown> {
+  // フィールド名は docs/BACKEND_IDS.md で確定済み: manager_member（manager_member_idではない）
   return {
     subject: input.deptName,
     description: input.description,
-    // 要確認: Departmentコンテンツ定義に manager_member_id 項目が無い（fromApiDepartmentのコメント参照）。
-    // 項目追加後に有効化される想定で送信しておくが、現状は無視される/エラーになる可能性がある。
-    manager_member_id: input.managerMemberId,
+    manager_member: input.managerMemberId,
   }
 }
 
+// フィールド名は docs/BACKEND_IDS.md で確定済み: budget_department, budget_note, budget_category
 export function budgetCreateApiPayload(departmentId: number, subject: string, input: BudgetInput): Record<string, unknown> {
   return {
     subject,
-    department: departmentId,
+    budget_department: departmentId,
     fiscal_year: input.fiscalYear,
     budget_amount: input.budgetAmount,
     used_amount: input.usedAmount,
-    note: input.note,
-    // 要確認: BACKEND_PLAN.mdのBudget定義にcategory項目が無い。追加されるまでは無視される想定。
-    category: input.category,
+    budget_note: input.note,
+    budget_category: input.category,
   }
 }
 
@@ -504,8 +517,8 @@ export function budgetUpdateApiPayload(input: BudgetInput): Record<string, unkno
     fiscal_year: input.fiscalYear,
     budget_amount: input.budgetAmount,
     used_amount: input.usedAmount,
-    note: input.note,
-    category: input.category,
+    budget_note: input.note,
+    budget_category: input.category,
   }
 }
 
@@ -598,16 +611,17 @@ export function purchaseRequestCreateApiPayload(
   totals: { totalExclTax: number; totalInclTax: number },
   approvalSteps: unknown[],
 ): Record<string, unknown> {
+  // フィールド名は docs/BACKEND_IDS.md で確定済み: pr_department, pr_status(select), pr_budget
   return {
     subject: input.title,
     applicant: input.applicantMemberId, // relation(module=member): topics_idではなくmember_idを渡す想定（未検証）
-    department: input.departmentId,
-    status: input.asDraft ? 'draft' : 'submitted',
+    pr_department: input.departmentId,
+    pr_status: input.asDraft ? 'draft' : 'submitted',
     overall_purpose: input.overallPurpose,
     line_items: lineItemsToApiJson(input.lineItems),
     total_excl_tax: totals.totalExclTax,
     total_incl_tax: totals.totalInclTax,
-    budget: input.budgetId,
+    pr_budget: input.budgetId,
     quotes: [],
     selected_vendor: null,
     approval_steps: approvalSteps,
@@ -624,7 +638,7 @@ export function purchaseRequestCreateApiPayload(
 export function computeSubmitPatch(raw: any, members: Member[]): Record<string, unknown> {
   const hasIt = (raw.line_items ?? []).some((li: any) => li.category === 'IT機器')
   return {
-    status: 'submitted',
+    pr_status: 'submitted',
     approval_steps: buildApiApprovalSteps(members, raw.total_incl_tax, hasIt),
   }
 }
@@ -662,7 +676,7 @@ export function computeApprovalActionPatch(
     current.status = '却下'
     statusKey = 'rejected'
   }
-  return { patch: { approval_steps: steps, status: statusKey }, afterLabel: PR_STATUS_BY_KEY[statusKey] }
+  return { patch: { approval_steps: steps, pr_status: statusKey }, afterLabel: PR_STATUS_BY_KEY[statusKey] }
 }
 
 export function computeSelectQuotePatch(raw: any, vendorId: number): Record<string, unknown> {
@@ -671,7 +685,7 @@ export function computeSelectQuotePatch(raw: any, vendorId: number): Record<stri
 }
 
 export function computePlaceOrderPatch(poNo: string): Record<string, unknown> {
-  return { po_no: poNo, po_date: new Date().toISOString().slice(0, 10), status: 'ordered' }
+  return { po_no: poNo, po_date: new Date().toISOString().slice(0, 10), pr_status: 'ordered' }
 }
 
 interface ReceiptInputShape {
@@ -700,17 +714,18 @@ export function computeReceiptPatch(raw: any, receipts: ReceiptInputShape[]): Re
   merged.forEach((r: any) => (receivedByName[r.item_name] = (receivedByName[r.item_name] ?? 0) + r.qty_received))
   const totalReceivedQty = Object.values(receivedByName).reduce((s, v) => s + v, 0)
   const statusKey = totalReceivedQty >= totalOrderedQty ? 'received' : 'partial_received'
-  return { receipts: merged, status: statusKey }
+  return { receipts: merged, pr_status: statusKey }
 }
 
+// フィールド名は docs/BACKEND_IDS.md で確定済み: inv_purchase_request, inv_vendor, inv_amount
 export function invoiceCreateApiPayload(requestRaw: any, amount: number): Record<string, unknown> {
   const matched = amount === requestRaw.total_incl_tax
   return {
     // 採番方式は仮実装（要確認）。実エンドポイント側で自動採番される場合は上書きされる想定。
     subject: `INV-${new Date().getFullYear()}-${String(requestRaw.topics_id).padStart(4, '0')}`,
-    purchase_request: requestRaw.topics_id,
-    vendor: relationTopicsId(requestRaw.selected_vendor),
-    amount,
+    inv_purchase_request: requestRaw.topics_id,
+    inv_vendor: relationTopicsId(requestRaw.selected_vendor),
+    inv_amount: amount,
     received_date: new Date().toISOString().slice(0, 10),
     matched_status: matched ? 'matched' : 'mismatched',
     discrepancy_note: matched ? '' : `発注金額${requestRaw.total_incl_tax}円に対し請求額${amount}円`,
@@ -757,13 +772,14 @@ export function auditLogInsertApiPayload(
   after: string | null,
   targetType: string,
 ): Record<string, unknown> {
+  // フィールド名は docs/BACKEND_IDS.md で確定済み: detail ではなく log_detail
   return {
     subject: detail || `${targetType} ${targetId} ${actionType}`,
     actor: actorId, // relation(module=member): member_idをそのまま渡す想定（未検証）
     action_type: ACTION_TYPE_TO_API_KEY[actionType] ?? 'update',
     target_type: targetType,
     target_id: targetId,
-    detail: `[${actionType}] ${detail}`,
+    log_detail: `[${actionType}] ${detail}`,
     before_status: before,
     after_status: after,
   }

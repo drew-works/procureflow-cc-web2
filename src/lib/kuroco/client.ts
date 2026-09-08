@@ -464,12 +464,13 @@ export interface RequestFilter {
 export async function listPurchaseRequests(filter: RequestFilter = {}): Promise<{ items: PurchaseRequest[]; pageInfo: { totalCnt: number; perPage: number; totalPageCnt: number; pageNo: number } }> {
   if (!USE_MOCK) {
     // 要確認: Kurocoのtopics検索クエリのパラメータ名は実エンドポイント作成後に確認が必要な仮実装。
-    // ここでは searchable指定済みのフィールド(status/department/total_incl_tax)に対する素朴な
-    // クエリパラメータ名を仮定している（未検証）。
+    // ここでは searchable指定済みのフィールド(pr_status/pr_department/total_incl_tax)に対する
+    // フィールドslugそのままのクエリパラメータ名を仮定している（未検証。実際には検索用の別名や
+    // search[...]形式が必要になる可能性がある）。
     const { list, pageInfo } = await apiList<any>('purchase-requests', {
       keyword: filter.keyword || undefined,
-      status: filter.status ? PR_STATUS_TO_KEY[filter.status] : undefined,
-      department: filter.departmentId || undefined,
+      pr_status: filter.status ? PR_STATUS_TO_KEY[filter.status] : undefined,
+      pr_department: filter.departmentId || undefined,
       applicant: filter.applicantMemberId || undefined,
       total_incl_tax_from: filter.amountMin ?? undefined,
       total_incl_tax_to: filter.amountMax ?? undefined,
@@ -804,7 +805,7 @@ export async function registerInvoice(requestId: number, amount: number, actorId
     const raw = await apiDetails<any>('purchase-requests', requestId)
     if (!raw) return null
     const invoiceRes = await apiInsert<{ topics_id: number }>('invoices', invoiceCreateApiPayload(raw, amount))
-    await apiUpdate('purchase-requests', requestId, { status: 'invoice_checking' })
+    await apiUpdate('purchase-requests', requestId, { pr_status: 'invoice_checking' })
     await postAuditLogApi(actorId, '請求書登録', requestId, `請求書を登録（${amount}円）`, null, '請求書確認中')
     await postAuditLogApi(actorId, '作成', invoiceRes.topics_id, `請求書を登録（${amount}円）`, null, '確認中', 'Invoice')
     const details = await apiDetails<any>('purchase-requests', requestId)
@@ -866,7 +867,7 @@ export async function holdInvoicePayment(invoiceId: number, actorId: number, act
     const beforeInvoice = fromApiInvoice(invoiceRaw)
     await apiUpdate('invoices', invoiceId, invoiceStatusApiPayload('支払保留', beforeInvoice.discrepancyNote))
     if (beforeInvoice.purchaseRequestId) {
-      await apiUpdate('purchase-requests', beforeInvoice.purchaseRequestId, { status: 'payment_hold' })
+      await apiUpdate('purchase-requests', beforeInvoice.purchaseRequestId, { pr_status: 'payment_hold' })
       await postAuditLogApi(actorId, '金額不一致検出', beforeInvoice.purchaseRequestId, `請求書${beforeInvoice.invoiceNo}の金額不一致により支払保留`, null, '支払い保留')
     }
     await postAuditLogApi(actorId, 'ステータス変更', invoiceId, `請求書${beforeInvoice.invoiceNo}を支払保留に変更`, beforeInvoice.matchedStatus, '支払保留', 'Invoice')
@@ -900,7 +901,7 @@ export async function confirmInvoiceMatch(invoiceId: number, actorId: number, ac
       const reqRaw = await apiDetails<any>('purchase-requests', beforeInvoice.purchaseRequestId)
       const reqStatus = reqRaw ? fromApiPurchaseRequest(reqRaw).status : null
       if (reqStatus === '支払い保留') {
-        await apiUpdate('purchase-requests', beforeInvoice.purchaseRequestId, { status: 'invoice_checking' })
+        await apiUpdate('purchase-requests', beforeInvoice.purchaseRequestId, { pr_status: 'invoice_checking' })
         await postAuditLogApi(actorId, '差異解消', beforeInvoice.purchaseRequestId, `請求書${beforeInvoice.invoiceNo}の差異を解消し請求書確認中に戻す`, '支払い保留', '請求書確認中')
       }
     }
@@ -933,7 +934,7 @@ export async function confirmInvoicePayment(invoiceId: number, actorId: number, 
     const beforeInvoice = fromApiInvoice(invoiceRaw)
     await apiUpdate('invoices', invoiceId, invoiceStatusApiPayload('支払済', beforeInvoice.discrepancyNote))
     if (beforeInvoice.purchaseRequestId) {
-      await apiUpdate('purchase-requests', beforeInvoice.purchaseRequestId, { status: 'completed' })
+      await apiUpdate('purchase-requests', beforeInvoice.purchaseRequestId, { pr_status: 'completed' })
       await postAuditLogApi(actorId, '支払確定', beforeInvoice.purchaseRequestId, `請求書${beforeInvoice.invoiceNo}の支払を確定し完了`, null, '完了')
     }
     await postAuditLogApi(actorId, '支払確定', invoiceId, `請求書${beforeInvoice.invoiceNo}を支払済に変更`, beforeInvoice.matchedStatus, '支払済', 'Invoice')
