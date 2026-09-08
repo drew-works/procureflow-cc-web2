@@ -4,16 +4,23 @@ Admin MCP (client_credentials, mcp:admin) で構築済み。生の対応関係�
 
 ## コンテンツ定義（TopicsGroup）
 
-| topics_group_id | 名前 | 内容 |
-|---|---|---|
-| 1 | Department | 部署マスター（nuxt-auth-templateのid=1を流用・改修） |
-| 7 | Vendor | 取引先マスター |
-| 8 | StaffProfile | 社員プロファイル（会員⇔部署の紐付け） |
-| 9 | Budget | 部署別予算マスター |
-| 10 | ApprovalRule | 承認ルール |
-| 11 | PurchaseRequest | 購買申請（本体） |
-| 12 | Invoice | 請求書照合 |
-| 13 | AuditLog | 監査ログ |
+| topics_group_id | 名前 | 内容 | 実フィールドslug（subject=名前/件名は共通） |
+|---|---|---|---|
+| 1 | Department | 部署マスター（nuxt-auth-templateのid=1を流用・改修） | dept_code, description, manager_member(relation→member) |
+| 7 | Vendor | 取引先マスター | vendor_code, contact_person, vendor_email, phone, address, bank_info, payment_terms, vendor_category(select), vendor_status(select) |
+| 8 | StaffProfile | 社員プロファイル（会員⇔部署の紐付け） | staff_member(relation→member), staff_department(relation→Department), position |
+| 9 | Budget | 部署別予算マスター | budget_department(relation→Department), fiscal_year, budget_amount, used_amount, budget_note, budget_category |
+| 10 | ApprovalRule | 承認ルール | min_amount, max_amount, requires_it_review(bool), steps(json), active_flag(bool) |
+| 11 | PurchaseRequest | 購買申請（本体） | applicant(relation→member), pr_department(relation→Department), pr_status(select), overall_purpose, line_items(json), total_excl_tax, total_incl_tax, pr_budget(relation→Budget), quotes(json), selected_vendor(relation→Vendor), attachment_quotes/attachment_specs/attachment_contracts(file×5), approval_steps(json), po_no, po_date, receipts(json) |
+| 12 | Invoice | 請求書照合 | inv_purchase_request(relation→PurchaseRequest), inv_vendor(relation→Vendor), inv_amount, received_date, matched_status(select), discrepancy_note, invoice_file |
+| 13 | AuditLog | 監査ログ | actor(relation→member), action_type(select・7値: create/update/status_change/approve/reject/return/login), target_type, target_id, log_detail, before_status, after_status |
+
+**注意**: `docs/BACKEND_PLAN.md` の設計時JSON例では簡略名（department/status/budget等）を使っているが、
+実際にAdmin MCPで作成したフィールドは上表の通り接頭辞付き（pr_department/pr_status/pr_budget等、
+vendor_email/vendor_category/vendor_status等）。**実装・API呼び出しは必ずこの表のslugに従うこと。**
+AuditLog.action_typeは選択肢を後から追加できない仕様のため7値固定。アプリ側のより詳細な操作種別
+（下書き保存・申請・見積選定等）はこの7値にマッピングしてdetail(log_detail)に原文を残す
+（`src/lib/kuroco/mappers.ts` の `ACTION_TYPE_TO_API_KEY` 参照）。
 
 topics_group_id=1は`nuxt-auth-template`由来の遺留フィールド(ext_1〜ext_9: Type/File/Link/Position image/
 Image/Textarea/MainImage/Subtitle text)が残存する（`topics_group-update`は既存フィールドを削除しない仕様

@@ -1,5 +1,30 @@
 // Kuroco API / モックの切り替え層。UIコンポーネントは必ずこの層を経由すること。
 import {
+  approvalRuleActiveApiPayload,
+  approvalRuleCreateApiPayload,
+  approvalRuleUpdateApiPayload,
+  auditLogInsertApiPayload,
+  budgetCreateApiPayload,
+  budgetUpdateApiPayload,
+  buildApiApprovalSteps,
+  computeApprovalActionPatch,
+  computePlaceOrderPatch,
+  computeReceiptPatch,
+  computeSelectQuotePatch,
+  computeSubmitPatch,
+  departmentUpdateApiPayload,
+  fromApiApprovalRule,
+  fromApiAuditLog,
+  fromApiBudget,
+  fromApiDepartment,
+  fromApiInvoice,
+  fromApiPurchaseRequest,
+  fromApiStaffProfile,
+  fromApiVendor,
+  invoiceCreateApiPayload,
+  invoiceStatusApiPayload,
+  purchaseRequestCreateApiPayload,
+  PR_STATUS_TO_KEY,
   toApprovalRule,
   toAuditLog,
   toBudget,
@@ -8,6 +33,9 @@ import {
   toMember,
   toPurchaseRequest,
   toVendor,
+  vendorCreateApiPayload,
+  vendorInputToApiPayload,
+  vendorStatusApiPayload,
 } from './mappers'
 import type {
   ApprovalRole,
@@ -22,7 +50,10 @@ import type {
   DepartmentInput,
   Invoice,
   InvoiceMatchStatus,
+  KurocoDetailsResponse,
+  KurocoListResponse,
   Member,
+  PageInfo,
   PurchaseRequest,
   PurchaseRequestStatus,
   Quote,
@@ -46,6 +77,63 @@ async function realFetch<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(init?.headers ?? {}) },
   })
   return res.json()
+}
+
+// 実APIのパス接頭辞。API ID(rcms-api/{id})は docs/API_BLOCKER.md の作業（管理画面でのエンドポイント
+// 作成）が完了するまで未確定。既存分岐が仮定していた "1" を暫定的に踏襲するが、実際に採番された
+// API IDが判明次第、差し替えが必要（未検証）。
+const RCMS_API_PATH = '/rcms-api/1'
+
+// エンドポイントのパス命名は docs/API_BLOCKER.md に記載した命名規則（{resource}/list, {resource}/details,
+// {resource}/insert, {resource}/update/{id}）に従う。フィルタ用クエリパラメータ名は実エンドポイント
+// 作成後に確認が必要な仮実装（未検証）。
+
+function buildQuery(params: Record<string, string | number | boolean | undefined | null>): string {
+  const usp = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null || v === '') continue
+    usp.set(k, String(v))
+  }
+  const qs = usp.toString()
+  return qs ? `?${qs}` : ''
+}
+
+async function apiList<T>(resource: string, query: Record<string, string | number | boolean | undefined | null> = {}): Promise<{ list: T[]; pageInfo: PageInfo }> {
+  const res = await realFetch<KurocoListResponse<T>>(`${RCMS_API_PATH}/${resource}/list${buildQuery(query)}`)
+  return { list: res.list ?? [], pageInfo: res.pageInfo }
+}
+
+async function apiDetails<T>(resource: string, id: number): Promise<T | null> {
+  const res = await realFetch<KurocoDetailsResponse<T>>(`${RCMS_API_PATH}/${resource}/details/${id}`)
+  return res.details ?? null
+}
+
+async function apiInsert<T = any>(resource: string, body: Record<string, unknown>): Promise<T> {
+  return realFetch<T>(`${RCMS_API_PATH}/${resource}/insert`, { method: 'POST', body: JSON.stringify(body) })
+}
+
+async function apiUpdate<T = any>(resource: string, id: number, body: Record<string, unknown>): Promise<T> {
+  return realFetch<T>(`${RCMS_API_PATH}/${resource}/update/${id}`, { method: 'PUT', body: JSON.stringify(body) })
+}
+
+// pushAuditLog（下記、モックDB用）の実API版。監査ログ用のAuditLogコンテンツ定義には既知の不整合
+// （mappers.ts の auditLogInsertApiPayload / fromApiAuditLog のコメント参照）があり、
+// action_typeがselect型の想定選択肢を超える値を受け付けない可能性が高い。業務操作自体を失敗させない
+// ため、記録失敗はログ出力のみに留めるベストエフォート実装とする（未検証）。
+async function postAuditLogApi(
+  actorId: number,
+  actionType: string,
+  targetId: number,
+  detail: string,
+  before: string | null,
+  after: string | null,
+  targetType: string = 'PurchaseRequest',
+): Promise<void> {
+  try {
+    await apiInsert('audit-logs', auditLogInsertApiPayload(actorId, actionType, targetId, detail, before, after, targetType))
+  } catch (e) {
+    console.error('[procureflow] 監査ログの実API記録に失敗しました（未検証のエンドポイントのため想定内）', e)
+  }
 }
 
 // ---- モック用インメモリDB（セッション中のみ状態を保持。リロードでリセットされる） ----
@@ -85,6 +173,10 @@ async function db() {
   return _db
 }
 
+// モックDB用の監査ログ記録。実API使用時（!USE_MOCK）はこの関数を使わず、各操作関数内で
+// postAuditLogApi（本ファイル上部、AuditLog topics_group_id=13へのinsert）を個別に呼び出す。
+// pushAuditLogは第一引数にモックDBオブジェクトを取る設計のため、この1関数の内部で分岐させるのではなく
+// 呼び出し側の各アクション関数でUSE_MOCK分岐する形にしている（モック分岐は無変更）。
 let nextLogId = 1000
 function pushAuditLog(
   d: NonNullable<typeof _db>,
@@ -112,31 +204,49 @@ function pushAuditLog(
 
 // ---- マスタ系 ----
 export async function listDepartments(): Promise<Department[]> {
-  if (!USE_MOCK) return realFetch<any>('/rcms-api/1/departments').then((r) => r.list.map(toDepartment))
+  if (!USE_MOCK) {
+    const { list } = await apiList<any>('departments')
+    return list.map(fromApiDepartment)
+  }
   const d = await db()
   return d.departments.map(toDepartment)
 }
 
 export async function listBudgets(): Promise<Budget[]> {
-  if (!USE_MOCK) return realFetch<any>('/rcms-api/1/budgets').then((r) => r.list.map(toBudget))
+  if (!USE_MOCK) {
+    const { list } = await apiList<any>('budgets')
+    return list.map(fromApiBudget)
+  }
   const d = await db()
   return d.budgets.map(toBudget)
 }
 
 export async function listVendors(): Promise<Vendor[]> {
-  if (!USE_MOCK) return realFetch<any>('/rcms-api/1/vendors').then((r) => r.list.map(toVendor))
+  if (!USE_MOCK) {
+    const { list } = await apiList<any>('vendors')
+    return list.map(fromApiVendor)
+  }
   const d = await db()
   return d.vendors.map(toVendor)
 }
 
 export async function listApprovalRules(): Promise<ApprovalRule[]> {
-  if (!USE_MOCK) return realFetch<any>('/rcms-api/1/approval_rules').then((r) => r.list.map(toApprovalRule))
+  if (!USE_MOCK) {
+    const { list } = await apiList<any>('approval-rules')
+    return list.map(fromApiApprovalRule)
+  }
   const d = await db()
   return d.approvalRules.map(toApprovalRule)
 }
 
 export async function listMembers(): Promise<Member[]> {
-  if (!USE_MOCK) return realFetch<any>('/rcms-api/1/members').then((r) => r.list.map(toMember))
+  // 要確認: 会員一覧はKuroco標準のMember APIではなく、StaffProfile（topics_group_id=8、
+  // 会員⇔部署の紐付け用コンテンツ）経由で取得する想定（docs/API_BLOCKER.mdの staff-profiles/list）。
+  // フィールド定義・relation(module=member)の実データ形式ともに未確認（mappers.ts参照）。
+  if (!USE_MOCK) {
+    const { list } = await apiList<any>('staff-profiles')
+    return list.map(fromApiStaffProfile)
+  }
   const d = await db()
   return d.members.map(toMember)
 }
@@ -144,6 +254,13 @@ export async function listMembers(): Promise<Member[]> {
 // ---- 取引先マスター ----
 let nextVendorId = 1000
 export async function createVendor(input: VendorInput, actorId: number, actorName: string): Promise<Vendor> {
+  if (!USE_MOCK) {
+    const res = await apiInsert<{ topics_id: number }>('vendors', vendorCreateApiPayload(input))
+    await postAuditLogApi(actorId, '作成', res.topics_id, `取引先「${input.name}」を登録`, null, '取引中', 'Vendor')
+    const details = await apiDetails<any>('vendors', res.topics_id)
+    if (!details) throw new Error('作成した取引先の取得に失敗しました')
+    return fromApiVendor(details)
+  }
   const d = await db()
   const id = nextVendorId++
   const raw = {
@@ -165,6 +282,12 @@ export async function createVendor(input: VendorInput, actorId: number, actorNam
 }
 
 export async function updateVendor(vendorId: number, input: VendorInput, actorId: number, actorName: string): Promise<Vendor | null> {
+  if (!USE_MOCK) {
+    await apiUpdate('vendors', vendorId, vendorInputToApiPayload(input))
+    await postAuditLogApi(actorId, '更新', vendorId, `取引先「${input.name}」を更新`, null, null, 'Vendor')
+    const details = await apiDetails<any>('vendors', vendorId)
+    return details ? fromApiVendor(details) : null
+  }
   const d = await db()
   const raw = d.vendors.find((v) => v.vendor_id === vendorId)
   if (!raw) return null
@@ -184,6 +307,13 @@ export async function updateVendor(vendorId: number, input: VendorInput, actorId
 }
 
 export async function setVendorStatus(vendorId: number, active: boolean, actorId: number, actorName: string): Promise<Vendor | null> {
+  if (!USE_MOCK) {
+    await apiUpdate('vendors', vendorId, vendorStatusApiPayload(active))
+    const label = active ? '取引中' : '停止中'
+    await postAuditLogApi(actorId, 'ステータス変更', vendorId, `取引先を${label}に変更`, null, label, 'Vendor')
+    const details = await apiDetails<any>('vendors', vendorId)
+    return details ? fromApiVendor(details) : null
+  }
   const d = await db()
   const raw = d.vendors.find((v) => v.vendor_id === vendorId)
   if (!raw) return null
@@ -195,6 +325,12 @@ export async function setVendorStatus(vendorId: number, active: boolean, actorId
 
 // ---- 部署・予算マスター ----
 export async function updateDepartment(departmentId: number, input: DepartmentInput, members: Member[], actorId: number, actorName: string): Promise<Department | null> {
+  if (!USE_MOCK) {
+    await apiUpdate('departments', departmentId, departmentUpdateApiPayload(input))
+    await postAuditLogApi(actorId, '更新', departmentId, `部署「${input.deptName}」を更新`, null, null, 'Department')
+    const details = await apiDetails<any>('departments', departmentId)
+    return details ? fromApiDepartment(details) : null
+  }
   const d = await db()
   const raw = d.departments.find((dep) => dep.department_id === departmentId)
   if (!raw) return null
@@ -207,6 +343,12 @@ export async function updateDepartment(departmentId: number, input: DepartmentIn
 }
 
 export async function updateBudget(budgetId: number, input: BudgetInput, actorId: number, actorName: string): Promise<Budget | null> {
+  if (!USE_MOCK) {
+    await apiUpdate('budgets', budgetId, budgetUpdateApiPayload(input))
+    await postAuditLogApi(actorId, '更新', budgetId, `予算(${input.fiscalYear}年度)を更新`, null, null, 'Budget')
+    const details = await apiDetails<any>('budgets', budgetId)
+    return details ? fromApiBudget(details) : null
+  }
   const d = await db()
   const raw = d.budgets.find((b) => b.budget_id === budgetId)
   if (!raw) return null
@@ -221,6 +363,14 @@ export async function updateBudget(budgetId: number, input: BudgetInput, actorId
 
 let nextBudgetId = 1000
 export async function createBudget(departmentId: number, departmentName: string, input: BudgetInput, actorId: number, actorName: string): Promise<Budget> {
+  if (!USE_MOCK) {
+    const subject = `${departmentName} ${input.fiscalYear}年度予算`
+    const res = await apiInsert<{ topics_id: number }>('budgets', budgetCreateApiPayload(departmentId, subject, input))
+    await postAuditLogApi(actorId, '作成', res.topics_id, `予算(${departmentName} ${input.fiscalYear}年度)を作成`, null, null, 'Budget')
+    const details = await apiDetails<any>('budgets', res.topics_id)
+    if (!details) throw new Error('作成した予算の取得に失敗しました')
+    return fromApiBudget(details)
+  }
   const d = await db()
   const id = nextBudgetId++
   const raw = {
@@ -240,6 +390,13 @@ export async function createBudget(departmentId: number, departmentName: string,
 // ---- 承認ルール管理 ----
 let nextApprovalRuleId = 1000
 export async function createApprovalRule(input: ApprovalRuleInput, actorId: number, actorName: string): Promise<ApprovalRule> {
+  if (!USE_MOCK) {
+    const res = await apiInsert<{ topics_id: number }>('approval-rules', approvalRuleCreateApiPayload(input))
+    await postAuditLogApi(actorId, '作成', res.topics_id, `承認ルール「${input.ruleName}」を作成`, null, null, 'ApprovalRule')
+    const details = await apiDetails<any>('approval-rules', res.topics_id)
+    if (!details) throw new Error('作成した承認ルールの取得に失敗しました')
+    return fromApiApprovalRule(details)
+  }
   const d = await db()
   const id = nextApprovalRuleId++
   const raw = {
@@ -257,6 +414,12 @@ export async function createApprovalRule(input: ApprovalRuleInput, actorId: numb
 }
 
 export async function updateApprovalRule(ruleId: number, input: ApprovalRuleInput, actorId: number, actorName: string): Promise<ApprovalRule | null> {
+  if (!USE_MOCK) {
+    await apiUpdate('approval-rules', ruleId, approvalRuleUpdateApiPayload(input))
+    await postAuditLogApi(actorId, '更新', ruleId, `承認ルール「${input.ruleName}」を更新`, null, null, 'ApprovalRule')
+    const details = await apiDetails<any>('approval-rules', ruleId)
+    return details ? fromApiApprovalRule(details) : null
+  }
   const d = await db()
   const raw = d.approvalRules.find((r) => r.rule_id === ruleId)
   if (!raw) return null
@@ -270,6 +433,12 @@ export async function updateApprovalRule(ruleId: number, input: ApprovalRuleInpu
 }
 
 export async function setApprovalRuleActive(ruleId: number, active: boolean, actorId: number, actorName: string): Promise<ApprovalRule | null> {
+  if (!USE_MOCK) {
+    await apiUpdate('approval-rules', ruleId, approvalRuleActiveApiPayload(active))
+    await postAuditLogApi(actorId, 'ステータス変更', ruleId, `承認ルールを${active ? '有効化' : '無効化'}`, null, null, 'ApprovalRule')
+    const details = await apiDetails<any>('approval-rules', ruleId)
+    return details ? fromApiApprovalRule(details) : null
+  }
   const d = await db()
   const raw = d.approvalRules.find((r) => r.rule_id === ruleId)
   if (!raw) return null
@@ -293,6 +462,24 @@ export interface RequestFilter {
 }
 
 export async function listPurchaseRequests(filter: RequestFilter = {}): Promise<{ items: PurchaseRequest[]; pageInfo: { totalCnt: number; perPage: number; totalPageCnt: number; pageNo: number } }> {
+  if (!USE_MOCK) {
+    // 要確認: Kurocoのtopics検索クエリのパラメータ名は実エンドポイント作成後に確認が必要な仮実装。
+    // ここでは searchable指定済みのフィールド(status/department/total_incl_tax)に対する素朴な
+    // クエリパラメータ名を仮定している（未検証）。
+    const { list, pageInfo } = await apiList<any>('purchase-requests', {
+      keyword: filter.keyword || undefined,
+      status: filter.status ? PR_STATUS_TO_KEY[filter.status] : undefined,
+      department: filter.departmentId || undefined,
+      applicant: filter.applicantMemberId || undefined,
+      total_incl_tax_from: filter.amountMin ?? undefined,
+      total_incl_tax_to: filter.amountMax ?? undefined,
+      inst_ymdhi_from: filter.dateFrom || undefined,
+      inst_ymdhi_to: filter.dateTo || undefined,
+      pageID: filter.page ?? 1,
+      pageSize: filter.perPage ?? 10,
+    })
+    return { items: list.map(fromApiPurchaseRequest), pageInfo }
+  }
   const d = await db()
   let items = d.requests.map(toPurchaseRequest)
 
@@ -320,6 +507,10 @@ export async function listPurchaseRequests(filter: RequestFilter = {}): Promise<
 }
 
 export async function getPurchaseRequest(id: number): Promise<PurchaseRequest | null> {
+  if (!USE_MOCK) {
+    const details = await apiDetails<any>('purchase-requests', id)
+    return details ? fromApiPurchaseRequest(details) : null
+  }
   const d = await db()
   const raw = d.requests.find((r) => r.topics_id === id)
   return raw ? toPurchaseRequest(raw) : null
@@ -398,6 +589,26 @@ function buildApprovalSteps(members: any[], amount: number, hasItCategory: boole
 
 let nextRequestId = 1000
 export async function createPurchaseRequest(input: CreateRequestInput): Promise<PurchaseRequest> {
+  if (!USE_MOCK) {
+    const totals = calcRequestTotals(input.lineItems)
+    const hasIt = input.lineItems.some((li) => li.category === 'IT機器')
+    // 承認ラインは申請時点のメンバー一覧から組み立てる（buildApiApprovalSteps参照）。下書き保存時は空。
+    const members = input.asDraft ? [] : await listMembers()
+    const approvalSteps = input.asDraft ? [] : buildApiApprovalSteps(members, totals.totalInclTax, hasIt)
+    const payload = purchaseRequestCreateApiPayload(input, totals, approvalSteps)
+    const res = await apiInsert<{ topics_id: number }>('purchase-requests', payload)
+    await postAuditLogApi(
+      input.applicantMemberId,
+      input.asDraft ? '下書き保存' : '申請',
+      res.topics_id,
+      input.title,
+      null,
+      input.asDraft ? '下書き' : '申請中',
+    )
+    const details = await apiDetails<any>('purchase-requests', res.topics_id)
+    if (!details) throw new Error('作成した申請の取得に失敗しました')
+    return fromApiPurchaseRequest(details)
+  }
   const d = await db()
   const totals = calcRequestTotals(input.lineItems)
   const hasIt = input.lineItems.some((li) => li.category === 'IT機器')
@@ -443,6 +654,15 @@ export async function createPurchaseRequest(input: CreateRequestInput): Promise<
 }
 
 export async function submitDraft(id: number, actorId: number, actorName: string): Promise<PurchaseRequest | null> {
+  if (!USE_MOCK) {
+    const raw = await apiDetails<any>('purchase-requests', id)
+    if (!raw) return null
+    const members = await listMembers()
+    await apiUpdate('purchase-requests', id, computeSubmitPatch(raw, members))
+    await postAuditLogApi(actorId, '申請', id, `${fromApiPurchaseRequest(raw).title}を申請`, null, '申請中')
+    const details = await apiDetails<any>('purchase-requests', id)
+    return details ? fromApiPurchaseRequest(details) : null
+  }
   const d = await db()
   const raw = d.requests.find((r) => r.topics_id === id)
   if (!raw) return null
@@ -458,6 +678,16 @@ export async function submitDraft(id: number, actorId: number, actorName: string
 export type ApprovalAction = '承認' | '差し戻し' | '却下'
 
 export async function actOnApproval(id: number, action: ApprovalAction, actorId: number, actorName: string, comment: string): Promise<PurchaseRequest | null> {
+  if (!USE_MOCK) {
+    const raw = await apiDetails<any>('purchase-requests', id)
+    if (!raw) return null
+    const result = computeApprovalActionPatch(raw, action, actorId, actorName, comment)
+    if (!result) return fromApiPurchaseRequest(raw)
+    await apiUpdate('purchase-requests', id, result.patch)
+    await postAuditLogApi(actorId, action, id, comment || `${action}`, null, result.afterLabel)
+    const details = await apiDetails<any>('purchase-requests', id)
+    return details ? fromApiPurchaseRequest(details) : null
+  }
   const d = await db()
   const raw = d.requests.find((r) => r.topics_id === id)
   if (!raw) return null
@@ -497,6 +727,14 @@ export async function resubmitRequest(id: number, actorId: number, actorName: st
 }
 
 export async function selectQuoteVendor(id: number, vendorId: number, actorId: number, actorName: string): Promise<PurchaseRequest | null> {
+  if (!USE_MOCK) {
+    const raw = await apiDetails<any>('purchase-requests', id)
+    if (!raw) return null
+    await apiUpdate('purchase-requests', id, computeSelectQuotePatch(raw, vendorId))
+    await postAuditLogApi(actorId, '見積選定', id, `ベンダーID ${vendorId} を選定`, null, null)
+    const details = await apiDetails<any>('purchase-requests', id)
+    return details ? fromApiPurchaseRequest(details) : null
+  }
   const d = await db()
   const raw = d.requests.find((r) => r.topics_id === id)
   if (!raw) return null
@@ -508,6 +746,12 @@ export async function selectQuoteVendor(id: number, vendorId: number, actorId: n
 }
 
 export async function placeOrder(id: number, poNo: string, actorId: number, actorName: string): Promise<PurchaseRequest | null> {
+  if (!USE_MOCK) {
+    await apiUpdate('purchase-requests', id, computePlaceOrderPatch(poNo))
+    await postAuditLogApi(actorId, '発注', id, `発注書${poNo}を発行`, null, '発注済み')
+    const details = await apiDetails<any>('purchase-requests', id)
+    return details ? fromApiPurchaseRequest(details) : null
+  }
   const d = await db()
   const raw = d.requests.find((r) => r.topics_id === id)
   if (!raw) return null
@@ -521,6 +765,15 @@ export async function placeOrder(id: number, poNo: string, actorId: number, acto
 }
 
 export async function registerReceipt(id: number, receipts: Receipt[], actorId: number, actorName: string): Promise<PurchaseRequest | null> {
+  if (!USE_MOCK) {
+    const raw = await apiDetails<any>('purchase-requests', id)
+    if (!raw) return null
+    const patch = computeReceiptPatch(raw, receipts)
+    await apiUpdate('purchase-requests', id, patch)
+    await postAuditLogApi(actorId, '検収登録', id, '検収を登録', null, patch.status === 'received' ? '検収完了' : '一部検収')
+    const details = await apiDetails<any>('purchase-requests', id)
+    return details ? fromApiPurchaseRequest(details) : null
+  }
   const d = await db()
   const raw = d.requests.find((r) => r.topics_id === id)
   if (!raw) return null
@@ -547,6 +800,16 @@ export async function registerReceipt(id: number, receipts: Receipt[], actorId: 
 
 let nextInvoiceId = 1000
 export async function registerInvoice(requestId: number, amount: number, actorId: number, actorName: string): Promise<PurchaseRequest | null> {
+  if (!USE_MOCK) {
+    const raw = await apiDetails<any>('purchase-requests', requestId)
+    if (!raw) return null
+    const invoiceRes = await apiInsert<{ topics_id: number }>('invoices', invoiceCreateApiPayload(raw, amount))
+    await apiUpdate('purchase-requests', requestId, { status: 'invoice_checking' })
+    await postAuditLogApi(actorId, '請求書登録', requestId, `請求書を登録（${amount}円）`, null, '請求書確認中')
+    await postAuditLogApi(actorId, '作成', invoiceRes.topics_id, `請求書を登録（${amount}円）`, null, '確認中', 'Invoice')
+    const details = await apiDetails<any>('purchase-requests', requestId)
+    return details ? fromApiPurchaseRequest(details) : null
+  }
   const d = await db()
   const raw = d.requests.find((r) => r.topics_id === requestId)
   if (!raw) return null
@@ -571,6 +834,10 @@ export async function registerInvoice(requestId: number, amount: number, actorId
 
 // ---- 請求書 ----
 export async function listInvoices(): Promise<Invoice[]> {
+  if (!USE_MOCK) {
+    const { list } = await apiList<any>('invoices')
+    return list.map(fromApiInvoice)
+  }
   const d = await db()
   return d.invoices.map(toInvoice)
 }
@@ -578,6 +845,11 @@ export async function listInvoices(): Promise<Invoice[]> {
 const INVOICE_STATUS_KEY: Record<InvoiceMatchStatus, string> = { 確認中: 'checking', 一致: 'matched', 不一致: 'mismatch', 支払保留: 'hold', 支払済: 'paid' }
 
 export async function updateInvoiceStatus(invoiceId: number, status: InvoiceMatchStatus, note: string): Promise<Invoice | null> {
+  if (!USE_MOCK) {
+    await apiUpdate('invoices', invoiceId, invoiceStatusApiPayload(status, note))
+    const details = await apiDetails<any>('invoices', invoiceId)
+    return details ? fromApiInvoice(details) : null
+  }
   const d = await db()
   const raw = d.invoices.find((i) => i.invoice_id === invoiceId)
   if (!raw) return null
@@ -588,6 +860,19 @@ export async function updateInvoiceStatus(invoiceId: number, status: InvoiceMatc
 
 // 金額不一致検出 → 請求書を「支払保留」にし、対象申請のステータスも「支払い保留」にする（経理担当/管理者操作）
 export async function holdInvoicePayment(invoiceId: number, actorId: number, actorName: string): Promise<Invoice | null> {
+  if (!USE_MOCK) {
+    const invoiceRaw = await apiDetails<any>('invoices', invoiceId)
+    if (!invoiceRaw) return null
+    const beforeInvoice = fromApiInvoice(invoiceRaw)
+    await apiUpdate('invoices', invoiceId, invoiceStatusApiPayload('支払保留', beforeInvoice.discrepancyNote))
+    if (beforeInvoice.purchaseRequestId) {
+      await apiUpdate('purchase-requests', beforeInvoice.purchaseRequestId, { status: 'payment_hold' })
+      await postAuditLogApi(actorId, '金額不一致検出', beforeInvoice.purchaseRequestId, `請求書${beforeInvoice.invoiceNo}の金額不一致により支払保留`, null, '支払い保留')
+    }
+    await postAuditLogApi(actorId, 'ステータス変更', invoiceId, `請求書${beforeInvoice.invoiceNo}を支払保留に変更`, beforeInvoice.matchedStatus, '支払保留', 'Invoice')
+    const details = await apiDetails<any>('invoices', invoiceId)
+    return details ? fromApiInvoice(details) : null
+  }
   const d = await db()
   const raw = d.invoices.find((i) => i.invoice_id === invoiceId)
   if (!raw) return null
@@ -606,6 +891,23 @@ export async function holdInvoicePayment(invoiceId: number, actorId: number, act
 
 // 差異解消 → 請求書を「一致」として確定し、対象申請を「請求書確認中」に戻す（経理担当/管理者操作）
 export async function confirmInvoiceMatch(invoiceId: number, actorId: number, actorName: string): Promise<Invoice | null> {
+  if (!USE_MOCK) {
+    const invoiceRaw = await apiDetails<any>('invoices', invoiceId)
+    if (!invoiceRaw) return null
+    const beforeInvoice = fromApiInvoice(invoiceRaw)
+    await apiUpdate('invoices', invoiceId, invoiceStatusApiPayload('一致', ''))
+    if (beforeInvoice.purchaseRequestId) {
+      const reqRaw = await apiDetails<any>('purchase-requests', beforeInvoice.purchaseRequestId)
+      const reqStatus = reqRaw ? fromApiPurchaseRequest(reqRaw).status : null
+      if (reqStatus === '支払い保留') {
+        await apiUpdate('purchase-requests', beforeInvoice.purchaseRequestId, { status: 'invoice_checking' })
+        await postAuditLogApi(actorId, '差異解消', beforeInvoice.purchaseRequestId, `請求書${beforeInvoice.invoiceNo}の差異を解消し請求書確認中に戻す`, '支払い保留', '請求書確認中')
+      }
+    }
+    await postAuditLogApi(actorId, '一致確定', invoiceId, `請求書${beforeInvoice.invoiceNo}を一致として確定`, beforeInvoice.matchedStatus, '一致', 'Invoice')
+    const details = await apiDetails<any>('invoices', invoiceId)
+    return details ? fromApiInvoice(details) : null
+  }
   const d = await db()
   const raw = d.invoices.find((i) => i.invoice_id === invoiceId)
   if (!raw) return null
@@ -625,6 +927,19 @@ export async function confirmInvoiceMatch(invoiceId: number, actorId: number, ac
 
 // 支払確定 → 請求書を「支払済」にし、対象申請を「完了」にする（経理担当/管理者操作）
 export async function confirmInvoicePayment(invoiceId: number, actorId: number, actorName: string): Promise<Invoice | null> {
+  if (!USE_MOCK) {
+    const invoiceRaw = await apiDetails<any>('invoices', invoiceId)
+    if (!invoiceRaw) return null
+    const beforeInvoice = fromApiInvoice(invoiceRaw)
+    await apiUpdate('invoices', invoiceId, invoiceStatusApiPayload('支払済', beforeInvoice.discrepancyNote))
+    if (beforeInvoice.purchaseRequestId) {
+      await apiUpdate('purchase-requests', beforeInvoice.purchaseRequestId, { status: 'completed' })
+      await postAuditLogApi(actorId, '支払確定', beforeInvoice.purchaseRequestId, `請求書${beforeInvoice.invoiceNo}の支払を確定し完了`, null, '完了')
+    }
+    await postAuditLogApi(actorId, '支払確定', invoiceId, `請求書${beforeInvoice.invoiceNo}を支払済に変更`, beforeInvoice.matchedStatus, '支払済', 'Invoice')
+    const details = await apiDetails<any>('invoices', invoiceId)
+    return details ? fromApiInvoice(details) : null
+  }
   const d = await db()
   const raw = d.invoices.find((i) => i.invoice_id === invoiceId)
   if (!raw) return null
@@ -643,6 +958,10 @@ export async function confirmInvoicePayment(invoiceId: number, actorId: number, 
 
 // ---- 監査ログ ----
 export async function listAuditLogs(): Promise<AuditLog[]> {
+  if (!USE_MOCK) {
+    const { list } = await apiList<any>('audit-logs')
+    return list.map(fromApiAuditLog)
+  }
   const d = await db()
   return d.auditLogs.map(toAuditLog)
 }
